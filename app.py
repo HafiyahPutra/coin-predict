@@ -1,41 +1,42 @@
-from flask import Flask, request, jsonify
-import numpy as np
+from flask import Flask, jsonify, request
+from keras.models import load_model
 import pandas as pd
-import joblib
-import tensorflow as tf
+import requests
+from sklearn.preprocessing import MinMaxScaler
+import numpy as np
 
 app = Flask(__name__)
 
-# Load model dan scaler
-model = tf.keras.models.load_model('model_lstm.h5')
-scaler = joblib.load('scaler.save')
+# Muat model
+model = load_model('model.h5')
 
-time_step = 5  # harus sama dengan saat training
-
-@app.route('/predict', methods=['POST'])
+# Buat API untuk memprediksi harga coin
+@app.route('/predict', methods=['GET'])
 def predict():
-    try:
-        data = request.json  # Expecting list of OHLC dicts [{'open':..., 'high':..., 'low':..., 'close':...}, ...]
-        df = pd.DataFrame(data)
-        if df.shape[0] < time_step:
-            return jsonify({'error': f'Input data harus minimal {time_step} baris OHLC'}), 400
-
-        # Normalisasi data
-        scaled = scaler.transform(df[['open', 'high', 'low', 'close']])
-        X = scaled[-time_step:]  # ambil time_step terakhir
-        X = X.reshape(1, time_step, 4)
-
-        # Prediksi
-        pred_scaled = model.predict(X)
-        # Inverse transform hanya untuk kolom close (index 3)
-        dummy = np.zeros((pred_scaled.shape[0], 4))
-        dummy[:, 3] = pred_scaled[:, 0]
-        pred_price = scaler.inverse_transform(dummy)[0, 3]
-
-        return jsonify({'predicted_close': float(pred_price)})
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    # Ambil data dari GekkoAPI
+    url = "https://api.coingecko.com/api/v3/coins/bitcoin/ohlc?vs_currency=usd&days=30"
+    headers = {
+        "x-cg-demo-api-key": "CG-7pi9DCcf6E6PmCFBLrwvGtZT"
+    }
+    response = requests.get(url, headers=headers)
+    data = response.json()
+    
+    # Preprocessing data
+    df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    df.set_index('timestamp', inplace=True)
+    scaler = MinMaxScaler()
+    df[['open', 'high', 'low', 'close']] = scaler.fit_transform(df[['open', 'high', 'low', 'close']])
+    
+    # Buat dataset untuk prediksi
+    X = df[['open', 'high', 'low', 'close']].values[-7:]
+    X = X.reshape((1, 7, 4))
+    
+    # Prediksi harga coin
+    prediction = model.predict(X)
+    prediction = scaler.inverse_transform(np.array([[0, 0, 0, prediction[0][0]]]))[:, 3][0]
+    
+    return jsonify({'prediction': prediction})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(debug=True)
